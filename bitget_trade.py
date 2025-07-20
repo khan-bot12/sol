@@ -1,120 +1,48 @@
-import time
-import requests
-import hmac
-import hashlib
-import base64
-import os
+//@version=6
+strategy("EMA Scalping with Only Trailing Stop", overlay=true, default_qty_type=strategy.cash, default_qty_value=2500)
 
-# Load your Bitget API credentials
-API_KEY = os.getenv("BITGET_API_KEY")
-API_SECRET = os.getenv("BITGET_API_SECRET")
-API_PASSPHRASE = os.getenv("BITGET_API_PASSPHRASE")
-BASE_URL = "https://api.bitget.com"
+// === Inputs ===
+trailPerc = input.float(1.2, title="Trailing Stop %", minval=0.1)
 
-SYMBOL = "SOLUSDT_UMCBL"  # USDT-margined Futures
+// === Indicators ===
+emaFast = ta.ema(close, 7)
+emaSlow = ta.ema(close, 21)
+emaSlope = emaFast - emaFast[1]
 
-HEADERS = {
-    "Content-Type": "application/json",
-    "ACCESS-KEY": API_KEY,
-    "ACCESS-PASSPHRASE": API_PASSPHRASE,
-}
+macdLine = ta.ema(close, 12) - ta.ema(close, 26)
+macdSignal = ta.ema(macdLine, 9)
+macdHist = macdLine - macdSignal
+macdHistSlope = macdHist - macdHist[1]
 
+rsi = ta.rsi(close, 14)
 
-def get_timestamp():
-    return str(int(time.time() * 1000))
+// === Entry Conditions ===
+longCondition = ta.crossover(emaFast, emaSlow) and macdHist > 0 and macdHistSlope > 0 and rsi > 55 and close > emaFast and close > emaSlow
+shortCondition = ta.crossunder(emaFast, emaSlow) and macdHist < 0 and macdHistSlope < 0 and rsi < 45 and close < emaFast and close < emaSlow
 
+// === Trailing Stop Logic Only ===
+var float longTrailStop = na
+var float shortTrailStop = na
 
-def sign(message):
-    return base64.b64encode(
-        hmac.new(API_SECRET.encode(), message.encode(), hashlib.sha256).digest()
-    ).decode()
+if (strategy.position_size > 0)
+    longTrailStop := na(longTrailStop) ? close * (1 - trailPerc/100) : math.max(longTrailStop, high * (1 - trailPerc/100))
+    strategy.exit("Exit Long", from_entry="Long", stop=longTrailStop)
+else
+    longTrailStop := na
 
+if (strategy.position_size < 0)
+    shortTrailStop := na(shortTrailStop) ? close * (1 + trailPerc/100) : math.min(shortTrailStop, low * (1 + trailPerc/100))
+    strategy.exit("Exit Short", from_entry="Short", stop=shortTrailStop)
+else
+    shortTrailStop := na
 
-def auth_headers(method, path, body=""):
-    timestamp = get_timestamp()
-    message = f"{timestamp}{method}{path}{body}"
-    signature = sign(message)
-    headers = HEADERS.copy()
-    headers.update({
-        "ACCESS-TIMESTAMP": timestamp,
-        "ACCESS-SIGN": signature,
-    })
-    return headers
+// === Execute Trades ===
+if (longCondition)
+    strategy.entry("Long", strategy.long)
 
+if (shortCondition)
+    strategy.entry("Short", strategy.short)
 
-def cancel_all_orders():
-    path = f"/api/mix/v1/order/cancel-all-orders"
-    url = BASE_URL + path
-    payload = {
-        "symbol": SYMBOL,
-        "marginCoin": "USDT"
-    }
-    headers = auth_headers("POST", path, json.dumps(payload))
-    requests.post(url, headers=headers, json=payload)
-
-
-def get_position():
-    path = f"/api/mix/v1/position/single-position"
-    url = BASE_URL + path + f"?symbol={SYMBOL}&marginCoin=USDT"
-    headers = auth_headers("GET", path + f"?symbol={SYMBOL}&marginCoin=USDT")
-    response = requests.get(url, headers=headers)
-    data = response.json()
-    pos = data.get("data", {})
-    side = pos.get("holdSide", "")
-    return side if pos else "NONE"
-
-
-def place_order(side, size):
-    path = "/api/mix/v1/order/place-order"
-    url = BASE_URL + path
-    payload = {
-        "symbol": SYMBOL,
-        "marginCoin": "USDT",
-        "size": str(size),
-        "price": "",  # market order
-        "side": side,
-        "orderType": "market",
-        "tradeSide": "open",
-        "positionSide": "long" if side == "buy" else "short",
-        "force": True
-    }
-    headers = auth_headers("POST", path, json.dumps(payload))
-    response = requests.post(url, headers=headers, json=payload)
-    print(f"Order response: {response.text}")
-    return response.json()
-
-
-def close_position(current_side):
-    side = "sell" if current_side == "long" else "buy"
-    path = "/api/mix/v1/order/place-order"
-    url = BASE_URL + path
-    payload = {
-        "symbol": SYMBOL,
-        "marginCoin": "USDT",
-        "size": "15",  # fixed size to close
-        "price": "",
-        "side": side,
-        "orderType": "market",
-        "tradeSide": "close",
-        "positionSide": current_side,
-        "force": True
-    }
-    headers = auth_headers("POST", path, json.dumps(payload))
-    response = requests.post(url, headers=headers, json=payload)
-    print(f"Close response: {response.text}")
-    return response.json()
-
-
-def process_trade(signal, size):
-    current_pos = get_position()
-    print(f"Current Position: {current_pos}")
-
-    if signal == "BUY":
-        if current_pos == "short":
-            close_position("short")
-        place_order("buy", size)
-
-    elif signal == "SELL":
-        if current_pos == "long":
-            close_position("long")
-        place_order("sell", size)
+// === Plotting ===
+plot(emaFast, color=color.orange, title="EMA 7")
+plot(emaSlow, color=color.blue, title="EMA 21")
