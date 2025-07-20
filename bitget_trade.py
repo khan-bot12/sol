@@ -1,48 +1,109 @@
-//@version=6
-strategy("EMA Scalping with Only Trailing Stop", overlay=true, default_qty_type=strategy.cash, default_qty_value=2500)
+import os
+import requests
+import time
+import hmac
+import hashlib
+import json
+from dotenv import load_dotenv
 
-// === Inputs ===
-trailPerc = input.float(1.2, title="Trailing Stop %", minval=0.1)
+load_dotenv()
 
-// === Indicators ===
-emaFast = ta.ema(close, 7)
-emaSlow = ta.ema(close, 21)
-emaSlope = emaFast - emaFast[1]
+API_KEY = os.getenv("BITGET_API_KEY")
+API_SECRET = os.getenv("BITGET_API_SECRET")
+API_PASSPHRASE = os.getenv("BITGET_API_PASSPHRASE")
 
-macdLine = ta.ema(close, 12) - ta.ema(close, 26)
-macdSignal = ta.ema(macdLine, 9)
-macdHist = macdLine - macdSignal
-macdHistSlope = macdHist - macdHist[1]
+BASE_URL = "https://api.bitget.com"
+SYMBOL = "SOLUSDT_UMCBL"
+MARGIN_COIN = "USDT"
+SIZE = "15"
+LEVERAGE = 50
 
-rsi = ta.rsi(close, 14)
+HEADERS = {
+    "Content-Type": "application/json",
+    "ACCESS-KEY": API_KEY,
+    "ACCESS-PASSPHRASE": API_PASSPHRASE,
+}
 
-// === Entry Conditions ===
-longCondition = ta.crossover(emaFast, emaSlow) and macdHist > 0 and macdHistSlope > 0 and rsi > 55 and close > emaFast and close > emaSlow
-shortCondition = ta.crossunder(emaFast, emaSlow) and macdHist < 0 and macdHistSlope < 0 and rsi < 45 and close < emaFast and close < emaSlow
+def get_server_time():
+    response = requests.get(f"{BASE_URL}/api/mix/v1/market/time")
+    return str(response.json()["data"])
 
-// === Trailing Stop Logic Only ===
-var float longTrailStop = na
-var float shortTrailStop = na
+def sign_request(timestamp, method, request_path, body=""):
+    message = f"{timestamp}{method.upper()}{request_path}{body}"
+    signature = hmac.new(API_SECRET.encode(), message.encode(), hashlib.sha256).hexdigest()
+    return signature
 
-if (strategy.position_size > 0)
-    longTrailStop := na(longTrailStop) ? close * (1 - trailPerc/100) : math.max(longTrailStop, high * (1 - trailPerc/100))
-    strategy.exit("Exit Long", from_entry="Long", stop=longTrailStop)
-else
-    longTrailStop := na
+def send_signed_request(method, endpoint, body=None):
+    timestamp = get_server_time()
+    body_str = json.dumps(body) if body else ""
+    signature = sign_request(timestamp, method, endpoint, body_str)
 
-if (strategy.position_size < 0)
-    shortTrailStop := na(shortTrailStop) ? close * (1 + trailPerc/100) : math.min(shortTrailStop, low * (1 + trailPerc/100))
-    strategy.exit("Exit Short", from_entry="Short", stop=shortTrailStop)
-else
-    shortTrailStop := na
+    headers = HEADERS.copy()
+    headers["ACCESS-TIMESTAMP"] = timestamp
+    headers["ACCESS-SIGN"] = signature
 
-// === Execute Trades ===
-if (longCondition)
-    strategy.entry("Long", strategy.long)
+    url = BASE_URL + endpoint
+    if method.upper() == "POST":
+        response = requests.post(url, headers=headers, data=body_str)
+    else:
+        response = requests.get(url, headers=headers, params=body)
 
-if (shortCondition)
-    strategy.entry("Short", strategy.short)
+    return response.json()
 
-// === Plotting ===
-plot(emaFast, color=color.orange, title="EMA 7")
-plot(emaSlow, color=color.blue, title="EMA 21")
+def get_positions():
+    endpoint = f"/api/mix/v1/position/singlePosition"
+    params = {
+        "symbol": SYMBOL,
+        "marginCoin": MARGIN_COIN
+    }
+    return send_signed_request("GET", endpoint, params)
+
+def close_position(side):
+    endpoint = "/api/mix/v1/order/close-position"
+    body = {
+        "symbol": SYMBOL,
+        "marginCoin": MARGIN_COIN,
+        "positionSide": "long" if side == "BUY" else "short"
+    }
+    return send_signed_request("POST", endpoint, body)
+
+def place_order(side):
+    # First close the opposite position
+    print(f"🔁 Closing opposite position before placing {side} order...")
+    if side == "BUY":
+        close_position("SELL")
+    else:
+        close_position("BUY")
+
+    endpoint = "/api/mix/v1/order/place-order"
+    body = {
+        "symbol": SYMBOL,
+        "marginCoin": MARGIN_COIN,
+        "size": SIZE,
+        "price": "",  # Market order
+        "side": "open_long" if side == "BUY" else "open_short",
+        "orderType": "market"
+    }
+    return send_signed_request("POST", endpoint, body)
+
+def handle_trade(message):
+    print(f"📩 Received alert message: {message}")
+
+    if message == "UMLCB:BUY":
+        print("📈 Executing Long Entry...")
+        result = place_order("BUY")
+        print(result)
+    elif message == "UMLCB:SELL":
+        print("📉 Executing Short Entry...")
+        result = place_order("SELL")
+        print(result)
+    elif message == "UMLCB:CLOSE_LONG":
+        print("❌ Closing Long Position...")
+        result = close_position("BUY")
+        print(result)
+    elif message == "UMLCB:CLOSE_SHORT":
+        print("❌ Closing Short Position...")
+        result = close_position("SELL")
+        print(result)
+    else:
+        print("⚠️ Unknown alert message:", message)
