@@ -1,7 +1,16 @@
 import json
+import logging
+from datetime import datetime
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from bitget_trade import BitgetTrader
+
+# === Setup Logging ===
+logging.basicConfig(
+    filename="/root/sol/webhook_logs.log",
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 app = FastAPI()
 trader = BitgetTrader()
@@ -16,13 +25,17 @@ class TradeSignal(BaseModel):
 async def webhook(request: Request):
     try:
         payload = await request.json()
-        print("🔔 [WEBHOOK RECEIVED] Payload:", payload)
+        log_msg = f"[WEBHOOK RECEIVED] {payload}"
+        print(log_msg)
+        logging.info(log_msg)
 
         # Validate required fields
         required_fields = {"action", "symbol", "quantity", "leverage"}
         if not required_fields.issubset(payload.keys()):
-            print("❌ [ERROR] Missing required field(s) in webhook payload.")
-            return {"error": "Missing required field in webhook"}
+            error_msg = "[ERROR] Missing required field in webhook"
+            print(error_msg)
+            logging.error(error_msg)
+            return {"error": error_msg}
 
         action = payload["action"]
         symbol = payload["symbol"]
@@ -31,23 +44,31 @@ async def webhook(request: Request):
 
         # Handle signals
         if action == "buy":
-            print(f"📈 [ACTION] Opening LONG on {symbol} with {quantity} @ {leverage}x")
+            logging.info(f"[ACTION] Opening LONG on {symbol} with {quantity} @ {leverage}x")
             trader.open_long(symbol, quantity, leverage)
+
         elif action == "sell":
-            print(f"📉 [ACTION] Opening SHORT on {symbol} with {quantity} @ {leverage}x")
+            logging.info(f"[ACTION] Opening SHORT on {symbol} with {quantity} @ {leverage}x")
             trader.open_short(symbol, quantity, leverage)
+
         elif action == "close_long":
-            print(f"🔻 [ACTION] Closing LONG on {symbol}")
+            logging.info(f"[ACTION] Closing LONG on {symbol}")
             trader.close_long(symbol)
+
         elif action == "close_short":
-            print(f"🔺 [ACTION] Closing SHORT on {symbol}")
+            logging.info(f"[ACTION] Closing SHORT on {symbol}")
             trader.close_short(symbol)
+
         else:
-            print(f"❌ [ERROR] Unknown action received: {action}")
-            return {"error": "Invalid action"}
+            error_msg = f"[ERROR] Unknown action: {action}"
+            print(error_msg)
+            logging.error(error_msg)
+            return {"error": error_msg}
 
         return {"status": "ok"}
 
     except Exception as e:
-        print("❗ [EXCEPTION] Error while processing webhook:", str(e))
+        error_msg = f"[ERROR] Exception while processing webhook: {str(e)}"
+        print(error_msg)
+        logging.error(error_msg)
         return {"error": str(e)}
