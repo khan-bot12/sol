@@ -1,8 +1,8 @@
+# main.py
+import json
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 from bitget_trade import BitgetTrader
 import uvicorn
-import json
 import os
 from dotenv import load_dotenv
 
@@ -15,42 +15,34 @@ trader = BitgetTrader()
 async def webhook(request: Request):
     try:
         data = await request.json()
-        print(f"[INFO] Received webhook data: {data}")
-    except Exception as e:
-        print(f"[ERROR] Failed to parse JSON: {e}")
-        return JSONResponse(content={"error": "Invalid JSON"}, status_code=400)
+        print("[Webhook Received]:", data)
 
-    action = data.get("action")
-    symbol = data.get("symbol")
-    quantity = data.get("quantity")
-    leverage = data.get("leverage", 50)  # default to 50 if not provided
+        action = data.get("action")
+        symbol = data.get("symbol")
+        quantity = data.get("quantity")
+        leverage = data.get("leverage")
 
-    if not action or not symbol or not quantity:
-        print(f"[ERROR] Missing required field in webhook: {data}")
-        return JSONResponse(content={"error": "Missing required field"}, status_code=400)
+        if not all([action, symbol, quantity, leverage]):
+            print("[Error] Missing required field in webhook")
+            return {"status": "error", "message": "Missing required fields"}
 
-    try:
         if action == "buy":
-            print("[ACTION] Executing LONG")
             trader.open_long(symbol, quantity, leverage)
         elif action == "sell":
-            print("[ACTION] Executing SHORT")
             trader.open_short(symbol, quantity, leverage)
         elif action == "close_long":
-            print("[ACTION] Closing LONG")
             trader.close_long(symbol)
         elif action == "close_short":
-            print("[ACTION] Closing SHORT")
             trader.close_short(symbol)
         else:
-            print(f"[ERROR] Unknown action: {action}")
-            return JSONResponse(content={"error": "Unknown action"}, status_code=400)
+            print("[Error] Unknown action")
+            return {"status": "error", "message": "Unknown action"}
 
-        return JSONResponse(content={"status": "success"}, status_code=200)
+        return {"status": "success"}
 
     except Exception as e:
-        print(f"[ERROR] Exception while processing webhook: {e}")
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        print(f"[Error] Exception while processing webhook: {e}")
+        return {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=80)
+    uvicorn.run(app, host="0.0.0.0", port=80)
