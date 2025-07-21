@@ -1,63 +1,51 @@
-import json
 from fastapi import FastAPI, Request
-from pydantic import BaseModel
+import uvicorn
+import logging
 from bitget_trade import BitgetTrader
-import datetime
 
 app = FastAPI()
-trader = BitgetTrader()
 
-class TradeSignal(BaseModel):
-    action: str
-    symbol: str
-    quantity: float
-    leverage: int
+# === Logging Setup ===
+log_file_path = "/root/sol/webhook_logs.log"
 
-LOG_FILE = "/root/sol/webhook_logs.log"
-
-def log_to_file(message: str):
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(LOG_FILE, "a") as f:
-        f.write(f"[{timestamp}] {message}\n")
+logging.basicConfig(
+    filename=log_file_path,
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 
 @app.post("/webhook")
 async def webhook(request: Request):
     try:
-        log_to_file("🚨 Webhook endpoint triggered")
+        data = await request.json()
+        logging.info(f"📥 Received webhook data: {data}")
 
-        payload = await request.json()
-        log_to_file(f"[INFO] Payload received: {payload}")
+        # Initialize trader with symbol from the alert
+        trader = BitgetTrader(symbol=data.get("symbol", "SOLUSDT"))
 
-        required_fields = {"action", "symbol", "quantity", "leverage"}
-        if not required_fields.issubset(payload.keys()):
-            log_to_file("[ERROR] Missing required field in webhook")
-            return {"error": "Missing required field in webhook"}
-
-        action = payload["action"]
-        symbol = payload["symbol"]
-        quantity = payload["quantity"]
-        leverage = payload["leverage"]
+        action = data.get("action")
+        quantity = data.get("quantity")
 
         if action == "buy":
-            log_to_file(f"[ACTION] Opening LONG for {symbol} ({quantity} at {leverage}x)")
-            trader.open_long(symbol, quantity, leverage)
-        elif action == "sell":
-            log_to_file(f"[ACTION] Opening SHORT for {symbol} ({quantity} at {leverage}x)")
-            trader.open_short(symbol, quantity, leverage)
-        elif action == "close_long":
-            log_to_file(f"[ACTION] Closing LONG for {symbol}")
-            trader.close_long(symbol)
-        elif action == "close_short":
-            log_to_file(f"[ACTION] Closing SHORT for {symbol}")
-            trader.close_short(symbol)
-        else:
-            log_to_file(f"[ERROR] Unknown action: {action}")
-            return {"error": "Invalid action"}
+            logging.info(f"🟢 Processing BUY for {quantity}")
+            trader.close_short()
+            trader.open_long(quantity)
 
-        log_to_file("[SUCCESS] Action executed")
-        return {"status": "ok"}
+        elif action == "sell":
+            logging.info(f"🔴 Processing SELL for {quantity}")
+            trader.close_long()
+            trader.open_short(quantity)
+
+        else:
+            logging.warning(f"⚠️ Unknown action: {action}")
+
+        return {"status": "success"}
 
     except Exception as e:
-        error_msg = f"[ERROR] Exception: {str(e)}"
-        log_to_file(error_msg)
-        return {"error": str(e)}
+        logging.exception(f"❌ Error processing webhook: {e}")
+        return {"status": "error", "message": str(e)}
+
+# Run only if this script is executed directly (for local testing)
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=80)
