@@ -16,12 +16,12 @@ class TradeSignal(BaseModel):
 async def webhook(request: Request):
     try:
         payload = await request.json()
-        print("[INFO] Webhook received:", payload)
+        print("🔔 [WEBHOOK RECEIVED] Payload:", payload)
 
         # Validate required fields
         required_fields = {"action", "symbol", "quantity", "leverage"}
         if not required_fields.issubset(payload.keys()):
-            print("[ERROR] Missing required field in webhook")
+            print("❌ [ERROR] Missing required field(s) in webhook payload.")
             return {"error": "Missing required field in webhook"}
 
         action = payload["action"]
@@ -31,19 +31,23 @@ async def webhook(request: Request):
 
         # Handle signals
         if action == "buy":
+            print(f"📈 [ACTION] Opening LONG on {symbol} with {quantity} @ {leverage}x")
             trader.open_long(symbol, quantity, leverage)
         elif action == "sell":
+            print(f"📉 [ACTION] Opening SHORT on {symbol} with {quantity} @ {leverage}x")
             trader.open_short(symbol, quantity, leverage)
         elif action == "close_long":
+            print(f"🔻 [ACTION] Closing LONG on {symbol}")
             trader.close_long(symbol)
         elif action == "close_short":
+            print(f"🔺 [ACTION] Closing SHORT on {symbol}")
             trader.close_short(symbol)
         else:
-            print(f"[ERROR] Unknown action: {action}")
+            print(f"❌ [ERROR] Unknown action received: {action}")
             return {"error": "Invalid action"}
 
         return {"status": "ok"}
 
     except Exception as e:
-        print("[ERROR] Exception while processing webhook:", str(e))
+        print("❗ [EXCEPTION] Error while processing webhook:", str(e))
         return {"error": str(e)}
