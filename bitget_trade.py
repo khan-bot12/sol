@@ -1,126 +1,91 @@
+# === bitget_trade.py ===
 import os
 import time
-import logging
 import hmac
 import hashlib
-import base64
-import json
 import requests
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# === Logging Setup ===
-logging.basicConfig(
-    filename="/root/sol/webhook_logs.log",
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+BITGET_API_KEY = os.getenv("BITGET_API_KEY")
+BITGET_API_SECRET = os.getenv("BITGET_API_SECRET")
+BITGET_API_PASSPHRASE = os.getenv("BITGET_API_PASSPHRASE")
+BASE_URL = "https://api.bitget.com"
+
+HEADERS = {
+    "ACCESS-KEY": BITGET_API_KEY,
+    "Content-Type": "application/json",
+    "locale": "en-US"
+}
 
 class BitgetTrader:
     def __init__(self):
-        self.api_key = os.getenv("BITGET_API_KEY")
-        self.secret_key = os.getenv("BITGET_API_SECRET")
-        self.passphrase = os.getenv("BITGET_API_PASSPHRASE")
-        self.base_url = "https://api.bitget.com"
-        self.headers = {
-            "Content-Type": "application/json",
-            "ACCESS-KEY": self.api_key,
-            "ACCESS-PASSPHRASE": self.passphrase
-        }
+        if not all([BITGET_API_KEY, BITGET_API_SECRET, BITGET_API_PASSPHRASE]):
+            raise ValueError("Missing API credentials")
 
     def _get_timestamp(self):
         return str(int(time.time() * 1000))
 
     def _sign(self, timestamp, method, request_path, body=""):
         message = f"{timestamp}{method}{request_path}{body}"
-        signature = hmac.new(self.secret_key.encode(), message.encode(), hashlib.sha256).digest()
-        return base64.b64encode(signature).decode()
+        signature = hmac.new(BITGET_API_SECRET.encode(), message.encode(), hashlib.sha256).hexdigest()
+        return signature
 
-    def _request(self, method, endpoint, body=""):
+    def _send_request(self, method, endpoint, body=""):
         timestamp = self._get_timestamp()
-        body_str = json.dumps(body) if body else ""
-        sign = self._sign(timestamp, method.upper(), endpoint, body_str)
+        request_path = f"/api/mix/v1{endpoint}"
+        signature = self._sign(timestamp, method, request_path, body)
 
-        headers = self.headers.copy()
-        headers.update({
-            "ACCESS-SIGN": sign,
-            "ACCESS-TIMESTAMP": timestamp
+        HEADERS.update({
+            "ACCESS-TIMESTAMP": timestamp,
+            "ACCESS-SIGN": signature,
+            "ACCESS-PASSPHRASE": BITGET_API_PASSPHRASE
         })
 
-        url = self.base_url + endpoint
+        url = BASE_URL + request_path
+        response = requests.request(method, url, headers=HEADERS, data=body)
+        logging.info(f"[HTTP] {method} {url} - {response.status_code}: {response.text}")
+        return response.json()
 
-        try:
-            if method.upper() == "POST":
-                response = requests.post(url, headers=headers, data=body_str)
-            else:
-                response = requests.get(url, headers=headers, params=body)
-
-            response.raise_for_status()
-            logging.info(f"[RESPONSE] {response.status_code} {response.text}")
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            logging.error(f"[ERROR] Request failed: {e}")
-            return None
-
-    def set_leverage(self, symbol, leverage):
-        body = {
+    def _place_order(self, symbol, size, leverage, side, positionSide):
+        endpoint = "/order/placeOrder"
+        body = json.dumps({
             "symbol": symbol,
             "marginCoin": "USDT",
-            "leverage": str(leverage),
-            "holdSide": "long"
-        }
-        self._request("POST", "/api/mix/v1/account/setLeverage", body)
-
-    def close_long(self, symbol):
-        logging.info(f"[CLOSE] Closing LONG position on {symbol}")
-        self._close_position(symbol, "close_long")
-
-    def close_short(self, symbol):
-        logging.info(f"[CLOSE] Closing SHORT position on {symbol}")
-        self._close_position(symbol, "close_short")
+            "size": str(size),
+            "price": "",
+            "side": side,
+            "orderType": "market",
+            "positionSide": positionSide,
+            "leverage": str(leverage)
+        })
+        return self._send_request("POST", endpoint, body)
 
     def _close_position(self, symbol, side):
-        side_map = {
-            "close_long": "close_long",
-            "close_short": "close_short"
-        }
-        order_side = "close_long" if side == "close_long" else "close_short"
-        hold_side = "long" if side == "close_long" else "short"
-
-        body = {
+        endpoint = "/order/close-position"
+        body = json.dumps({
             "symbol": symbol,
             "marginCoin": "USDT",
-            "size": "100%",  # full close
-            "side": "close",
-            "holdSide": hold_side
-        }
-
-        logging.info(f"[ORDER] Sending {side} order for {symbol}")
-        self._request("POST", "/api/mix/v1/order/close-position", body)
+            "side": side
+        })
+        return self._send_request("POST", endpoint, body)
 
     def open_long(self, symbol, quantity, leverage):
-        logging.info(f"[OPEN] Opening LONG on {symbol} Qty: {quantity} Lev: {leverage}")
-        self.set_leverage(symbol, leverage)
-        self._place_order(symbol, quantity, "open_long")
+        logging.info(f"[ORDER] Opening LONG: {symbol}, Qty: {quantity}, Leverage: {leverage}")
+        self._close_position(symbol, "short")
+        return self._place_order(symbol, quantity, leverage, "buy", "long")
 
     def open_short(self, symbol, quantity, leverage):
-        logging.info(f"[OPEN] Opening SHORT on {symbol} Qty: {quantity} Lev: {leverage}")
-        self.set_leverage(symbol, leverage)
-        self._place_order(symbol, quantity, "open_short")
+        logging.info(f"[ORDER] Opening SHORT: {symbol}, Qty: {quantity}, Leverage: {leverage}")
+        self._close_position(symbol, "long")
+        return self._place_order(symbol, quantity, leverage, "sell", "short")
 
-    def _place_order(self, symbol, quantity, side):
-        side_type = "buy" if side == "open_long" else "sell"
-        hold_side = "long" if side == "open_long" else "short"
+    def close_long(self, symbol):
+        logging.info(f"[ORDER] Closing LONG: {symbol}")
+        return self._close_position(symbol, "long")
 
-        body = {
-            "symbol": symbol,
-            "marginCoin": "USDT",
-            "size": str(quantity),
-            "side": side_type,
-            "orderType": "market",
-            "holdSide": hold_side
-        }
-
-        logging.info(f"[ORDER] Placing {side.upper()} market order: {body}")
-        self._request("POST", "/api/mix/v1/order/place-order", body)
+    def close_short(self, symbol):
+        logging.info(f"[ORDER] Closing SHORT: {symbol}")
+        return self._close_position(symbol, "short")
