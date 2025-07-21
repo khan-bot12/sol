@@ -1,15 +1,8 @@
 import json
-import logging
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from bitget_trade import BitgetTrader
-
-# Setup logging
-logging.basicConfig(
-    filename="/root/sol/webhook_logs.log",
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
+import datetime
 
 app = FastAPI()
 trader = BitgetTrader()
@@ -20,15 +13,24 @@ class TradeSignal(BaseModel):
     quantity: float
     leverage: int
 
+LOG_FILE = "/root/sol/webhook_logs.log"
+
+def log_to_file(message: str):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(LOG_FILE, "a") as f:
+        f.write(f"[{timestamp}] {message}\n")
+
 @app.post("/webhook")
 async def webhook(request: Request):
     try:
+        log_to_file("🚨 Webhook endpoint triggered")
+
         payload = await request.json()
-        logging.info(f"Webhook received: {payload}")
+        log_to_file(f"[INFO] Payload received: {payload}")
 
         required_fields = {"action", "symbol", "quantity", "leverage"}
         if not required_fields.issubset(payload.keys()):
-            logging.error("Missing required field in webhook")
+            log_to_file("[ERROR] Missing required field in webhook")
             return {"error": "Missing required field in webhook"}
 
         action = payload["action"]
@@ -37,24 +39,25 @@ async def webhook(request: Request):
         leverage = payload["leverage"]
 
         if action == "buy":
-            logging.info("Executing open_long()")
+            log_to_file(f"[ACTION] Opening LONG for {symbol} ({quantity} at {leverage}x)")
             trader.open_long(symbol, quantity, leverage)
         elif action == "sell":
-            logging.info("Executing open_short()")
+            log_to_file(f"[ACTION] Opening SHORT for {symbol} ({quantity} at {leverage}x)")
             trader.open_short(symbol, quantity, leverage)
         elif action == "close_long":
-            logging.info("Executing close_long()")
+            log_to_file(f"[ACTION] Closing LONG for {symbol}")
             trader.close_long(symbol)
         elif action == "close_short":
-            logging.info("Executing close_short()")
+            log_to_file(f"[ACTION] Closing SHORT for {symbol}")
             trader.close_short(symbol)
         else:
-            logging.error(f"Unknown action: {action}")
+            log_to_file(f"[ERROR] Unknown action: {action}")
             return {"error": "Invalid action"}
 
-        logging.info("Webhook processed successfully")
+        log_to_file("[SUCCESS] Action executed")
         return {"status": "ok"}
 
     except Exception as e:
-        logging.exception("Exception while processing webhook")
+        error_msg = f"[ERROR] Exception: {str(e)}"
+        log_to_file(error_msg)
         return {"error": str(e)}
