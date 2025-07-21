@@ -3,6 +3,7 @@ import requests
 import time
 import hmac
 import hashlib
+import json
 
 class BitgetTrader:
     def __init__(self):
