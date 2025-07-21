@@ -1,61 +1,49 @@
 import json
 from fastapi import FastAPI, Request
+from pydantic import BaseModel
 from bitget_trade import BitgetTrader
-import uvicorn
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
-
-API_KEY = os.getenv("BITGET_API_KEY")
-API_SECRET = os.getenv("BITGET_API_SECRET")
-API_PASSPHRASE = os.getenv("BITGET_PASSPHRASE")
-
-trader = BitgetTrader(API_KEY, API_SECRET, API_PASSPHRASE)
 
 app = FastAPI()
+trader = BitgetTrader()
+
+class TradeSignal(BaseModel):
+    action: str
+    symbol: str
+    quantity: float
+    leverage: int
 
 @app.post("/webhook")
 async def webhook(request: Request):
     try:
-        data = await request.json()
-        print(f"[INFO] Webhook received: {data}")
+        payload = await request.json()
+        print("[INFO] Webhook received:", payload)
 
-        # Required fields
-        action = data.get("action")
-        symbol = data.get("symbol")
-        quantity = data.get("quantity")
-        leverage = data.get("leverage")  # Optional for close actions
-
-        if not action or not symbol or not quantity:
+        # Validate required fields
+        required_fields = {"action", "symbol", "quantity", "leverage"}
+        if not required_fields.issubset(payload.keys()):
             print("[ERROR] Missing required field in webhook")
-            return {"status": "error", "message": "Missing required field"}
+            return {"error": "Missing required field in webhook"}
 
+        action = payload["action"]
+        symbol = payload["symbol"]
+        quantity = payload["quantity"]
+        leverage = payload["leverage"]
+
+        # Handle signals
         if action == "buy":
-            trader.set_leverage(symbol, leverage)
-            trader.close_short(symbol)
-            trader.open_long(symbol, quantity)
-
+            trader.open_long(symbol, quantity, leverage)
         elif action == "sell":
-            trader.set_leverage(symbol, leverage)
-            trader.close_long(symbol)
-            trader.open_short(symbol, quantity)
-
+            trader.open_short(symbol, quantity, leverage)
         elif action == "close_long":
             trader.close_long(symbol)
-
         elif action == "close_short":
             trader.close_short(symbol)
-
         else:
             print(f"[ERROR] Unknown action: {action}")
-            return {"status": "error", "message": f"Unknown action: {action}"}
+            return {"error": "Invalid action"}
 
-        return {"status": "success"}
+        return {"status": "ok"}
 
     except Exception as e:
-        print(f"[ERROR] Exception while processing webhook: {str(e)}")
-        return {"status": "error", "message": str(e)}
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=80)
+        print("[ERROR] Exception while processing webhook:", str(e))
+        return {"error": str(e)}
