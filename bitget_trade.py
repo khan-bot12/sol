@@ -1,109 +1,95 @@
 import os
 import time
 import hmac
+import json
 import hashlib
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
-API_KEY = os.getenv("BITGET_API_KEY")
-API_SECRET = os.getenv("BITGET_API_SECRET")
-API_PASSPHRASE = os.getenv("BITGET_API_PASSPHRASE")
-BASE_URL = "https://api.bitget.com"
-
-HEADERS = {
-    "ACCESS-KEY": API_KEY,
-    "ACCESS-PASSPHRASE": API_PASSPHRASE,
-    "Content-Type": "application/json"
-}
-
 class BitgetTrader:
     def __init__(self):
-        self.session = requests.Session()
+        self.api_key = os.getenv("BITGET_API_KEY")
+        self.api_secret = os.getenv("BITGET_API_SECRET")
+        self.api_passphrase = os.getenv("BITGET_API_PASSPHRASE")
+        self.base_url = "https://api.bitget.com"
 
-    def _get_timestamp(self):
-        return str(int(time.time() * 1000))
+    def _sign(self, timestamp, method, request_path, body=""):
+        message = f"{timestamp}{method}{request_path}{body}"
+        mac = hmac.new(self.api_secret.encode(), message.encode(), hashlib.sha256)
+        return mac.hexdigest()
 
-    def _sign(self, timestamp, method, request_path, body=''):
-        pre_hash = f"{timestamp}{method.upper()}{request_path}{body}"
-        return hmac.new(
-            API_SECRET.encode(),
-            pre_hash.encode(),
-            hashlib.sha256
-        ).hexdigest()
+    def _send_request(self, method, endpoint, body=""):
+        url = self.base_url + endpoint
+        timestamp = str(int(time.time() * 1000))
+        body_str = json.dumps(body) if body else ""
+        signature = self._sign(timestamp, method.upper(), endpoint, body_str)
 
-    def _send_request(self, method, path, body_dict=None):
-        timestamp = self._get_timestamp()
-        body = json.dumps(body_dict) if body_dict else ''
-        sign = self._sign(timestamp, method, path, body)
+        headers = {
+            "ACCESS-KEY": self.api_key,
+            "ACCESS-SIGN": signature,
+            "ACCESS-TIMESTAMP": timestamp,
+            "ACCESS-PASSPHRASE": self.api_passphrase,
+            "Content-Type": "application/json"
+        }
 
-        headers = HEADERS.copy()
-        headers["ACCESS-TIMESTAMP"] = timestamp
-        headers["ACCESS-SIGN"] = sign
-
-        url = BASE_URL + path
+        response = requests.request(method, url, headers=headers, data=body_str)
         try:
-            if method == "POST":
-                response = self.session.post(url, headers=headers, data=body)
-            else:
-                response = self.session.get(url, headers=headers)
-
-            response.raise_for_status()
+            print(f"[Bitget API] {method} {endpoint} → {response.status_code}")
+            print(f"[Response] {response.text}")
             return response.json()
         except Exception as e:
-            print(f"[Error] Failed to send request: {e}")
+            print(f"[Error] Failed to parse response: {e}")
             return None
 
-    def _place_order(self, symbol, side, size, leverage):
-        # Ensure leverage is set
-        self._set_leverage(symbol, leverage)
-
-        order = {
-            "symbol": symbol,
-            "marginCoin": "USDT",
-            "size": str(size),
-            "side": side,
-            "orderType": "market",
-            "force": "gtc",
-            "tradeSide": "open" if "open" in side.lower() else "close"
-        }
-
-        return self._send_request("POST", "/api/mix/v1/order/place-order", order)
-
-    def _close_position(self, symbol, side):
-        close_side = "close_long" if side == "long" else "close_short"
-        path = "/api/mix/v1/order/close-position"
-        body = {
-            "symbol": symbol,
-            "marginCoin": "USDT",
-            "side": close_side
-        }
-
-        return self._send_request("POST", path, body)
-
-    def _set_leverage(self, symbol, leverage):
-        path = "/api/mix/v1/account/set-leverage"
+    def set_leverage(self, symbol, leverage):
         body = {
             "symbol": symbol,
             "marginCoin": "USDT",
             "leverage": str(leverage),
-            "holdSide": "long_short"
+            "holdSide": "long"
         }
-        return self._send_request("POST", path, body)
-
-    def open_long(self, symbol, size, leverage):
-        print(f"[TRADE] Opening LONG on {symbol} with size {size}")
-        return self._place_order(symbol, "open_long", size, leverage)
-
-    def open_short(self, symbol, size, leverage):
-        print(f"[TRADE] Opening SHORT on {symbol} with size {size}")
-        return self._place_order(symbol, "open_short", size, leverage)
+        self._send_request("POST", "/api/mix/v1/account/setLeverage", body)
 
     def close_long(self, symbol):
-        print(f"[TRADE] Closing LONG on {symbol}")
-        return self._close_position(symbol, "long")
+        print(f"[Action] Closing LONG on {symbol}")
+        self._place_order(symbol, "close_long")
 
     def close_short(self, symbol):
-        print(f"[TRADE] Closing SHORT on {symbol}")
-        return self._close_position(symbol, "short")
+        print(f"[Action] Closing SHORT on {symbol}")
+        self._place_order(symbol, "close_short")
+
+    def open_long(self, symbol, quantity):
+        print(f"[Action] Opening LONG on {symbol} with {quantity}")
+        self._place_order(symbol, "open_long", quantity)
+
+    def open_short(self, symbol, quantity):
+        print(f"[Action] Opening SHORT on {symbol} with {quantity}")
+        self._place_order(symbol, "open_short", quantity)
+
+    def _place_order(self, symbol, side, quantity=0):
+        side_map = {
+            "open_long": ("buy", "open_long"),
+            "open_short": ("sell", "open_short"),
+            "close_long": ("sell", "close_long"),
+            "close_short": ("buy", "close_short")
+        }
+
+        if side not in side_map:
+            print(f"[Error] Invalid order side: {side}")
+            return
+
+        side_type, pos_side = side_map[side]
+
+        body = {
+            "symbol": symbol,
+            "marginCoin": "USDT",
+            "size": str(quantity),
+            "price": "",
+            "side": side_type,
+            "orderType": "market",
+            "posSide": pos_side
+        }
+
+        self._send_request("POST", "/api/mix/v1/order/placeOrder", body)
