@@ -16,11 +16,7 @@ BASE_URL = "https://api.bitget.com"
 
 class BitgetTrader:
     def __init__(self):
-        self.symbol_map = {
-            "SOLUSDT": "SOLUSDT_UMCBL",
-            "ETHUSDT": "ETHUSDT_UMCBL",
-            "BTCUSDT": "BTCUSDT_UMCBL"
-        }
+        self.supported_symbols = ["SOLUSDT", "ETHUSDT", "BTCUSDT"]
 
     def _get_timestamp(self):
         return str(int(time.time() * 1000))
@@ -46,8 +42,7 @@ class BitgetTrader:
         }
 
     def _place_order(self, symbol, side, size, leverage):
-        instId = self.symbol_map.get(symbol.upper())
-        if not instId:
+        if symbol.upper() not in self.supported_symbols:
             print(f"[ERROR] Unsupported symbol: {symbol}")
             return
 
@@ -55,8 +50,9 @@ class BitgetTrader:
         url = BASE_URL + path
 
         body_dict = {
-            "symbol": instId,
+            "symbol": symbol.upper(),
             "marginCoin": "USDT",
+            "productType": "UMCBL",
             "size": str(size),
             "side": side,
             "orderType": "market",
@@ -71,8 +67,7 @@ class BitgetTrader:
         print("[INFO] Order Response:", response.text)
 
     def _close_order(self, symbol, side, size="0.1"):
-        instId = self.symbol_map.get(symbol.upper())
-        if not instId:
+        if symbol.upper() not in self.supported_symbols:
             print(f"[ERROR] Unsupported symbol: {symbol}")
             return
 
@@ -80,8 +75,9 @@ class BitgetTrader:
         url = BASE_URL + path
 
         body_dict = {
-            "symbol": instId,
+            "symbol": symbol.upper(),
             "marginCoin": "USDT",
+            "productType": "UMCBL",
             "size": str(size),
             "side": side,
             "orderType": "market",
