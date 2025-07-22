@@ -1,104 +1,101 @@
-import os
+import requests
 import time
 import hmac
 import hashlib
 import base64
-import requests
-import logging
-from dotenv import load_dotenv
+import json
+import os
 
-load_dotenv()
-
-API_KEY = os.getenv("BITGET_API_KEY")
-API_SECRET = os.getenv("BITGET_API_SECRET")
-API_PASSPHRASE = os.getenv("BITGET_API_PASSPHRASE")
+# === Load from environment or hardcoded ===
+API_KEY = os.getenv("BITGET_API_KEY", "your_api_key_here")
+API_SECRET = os.getenv("BITGET_API_SECRET", "your_api_secret_here")
+API_PASSPHRASE = os.getenv("BITGET_API_PASSPHRASE", "your_passphrase_here")
 BASE_URL = "https://api.bitget.com"
 
-logging.basicConfig(filename='webhook_logs.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 HEADERS = {
-    "Content-Type": "application/json",
     "ACCESS-KEY": API_KEY,
     "ACCESS-PASSPHRASE": API_PASSPHRASE,
+    "Content-Type": "application/json"
 }
 
 
-def _get_timestamp():
-    return str(int(time.time() * 1000))
+def get_server_time():
+    response = requests.get(BASE_URL + "/api/v2/public/time")
+    return str(response.json()['data'])
 
 
-def _sign(method, request_path, body=''):
-    timestamp = _get_timestamp()
-    prehash = timestamp + method.upper() + request_path + body
-    signature = base64.b64encode(
-        hmac.new(API_SECRET.encode(), prehash.encode(), hashlib.sha256).digest()
-    ).decode()
-    return signature, timestamp
+def sign_request(timestamp, method, request_path, body=""):
+    message = f"{timestamp}{method}{request_path}{body}"
+    mac = hmac.new(bytes(API_SECRET, encoding='utf8'),
+                   bytes(message, encoding='utf8'),
+                   digestmod=hashlib.sha256)
+    d = mac.digest()
+    return base64.b64encode(d).decode()
 
 
-def _send_request(method, path, body=''):
-    body_str = body if isinstance(body, str) else json.dumps(body)
-    signature, timestamp = _sign(method, path, body_str)
+def place_order(symbol, side, size, leverage):
+    timestamp = get_server_time()
+    path = "/api/v2/mix/order/place"
+    url = BASE_URL + path
+
+    body = {
+        "symbol": symbol,
+        "marginCoin": "USDT",
+        "orderType": "market",
+        "side": side,
+        "size": str(size),
+        "leverage": str(leverage),
+        "presetTakeProfitPrice": None,
+        "presetStopLossPrice": None,
+        "tradeSide": "open",
+        "productType": "umcbl"
+    }
+
+    body_json = json.dumps(body)
+    sign = sign_request(timestamp, "POST", path, body_json)
 
     headers = HEADERS.copy()
-    headers.update({
-        "ACCESS-TIMESTAMP": timestamp,
-        "ACCESS-SIGN": signature
-    })
+    headers["ACCESS-TIMESTAMP"] = timestamp
+    headers["ACCESS-SIGN"] = sign
 
-    url = BASE_URL + path
-    response = requests.request(method, url, headers=headers, data=body_str)
-    if response.status_code != 200:
-        logging.error(f"Error: {response.status_code} - {response.text}")
+    response = requests.post(url, headers=headers, data=body_json)
+    print(f"Place order response: {response.text}")
     return response.json()
 
 
-class BitgetTrader:
-    def __init__(self, symbol: str):
-        self.symbol = symbol.upper()  # e.g., SOLUSDT
-        self.margin_coin = "USDT"
-        self.leverage = 50
-        self.symbol_full = f"{self.symbol}_UMCBL"
+def close_position(symbol, side):
+    timestamp = get_server_time()
+    path = "/api/v2/mix/order/close-position"
+    url = BASE_URL + path
 
-    def _place_order(self, action: str, quantity: float):
-        """
-        action: 'buy' (open long), 'sell' (open short), 'close_long', 'close_short'
-        """
-        side = "open"
-        trade_side = "buy"
+    body = {
+        "symbol": symbol,
+        "marginCoin": "USDT",
+        "side": side,
+        "productType": "umcbl"
+    }
 
-        if action == "buy":
-            side = "open"
-            trade_side = "buy"
-        elif action == "sell":
-            side = "open"
-            trade_side = "sell"
-        elif action == "close_long":
-            side = "close"
-            trade_side = "sell"
-        elif action == "close_short":
-            side = "close"
-            trade_side = "buy"
-        else:
-            logging.error(f"Invalid action: {action}")
-            return {"error": "Invalid action"}
+    body_json = json.dumps(body)
+    sign = sign_request(timestamp, "POST", path, body_json)
 
-        order = {
-            "symbol": self.symbol_full,
-            "marginCoin": self.margin_coin,
-            "orderType": "market",
-            "side": side,
-            "tradeSide": trade_side,
-            "size": str(quantity),
-            "leverage": str(self.leverage)
-        }
+    headers = HEADERS.copy()
+    headers["ACCESS-TIMESTAMP"] = timestamp
+    headers["ACCESS-SIGN"] = sign
 
-        logging.info(f"Placing order: {order}")
-        path = "/api/mix/v1/order/placeOrder"
-        result = _send_request("POST", path, json.dumps(order))
-        logging.info(f"Order result: {result}")
-        return result
+    response = requests.post(url, headers=headers, data=body_json)
+    print(f"Close position response: {response.text}")
+    return response.json()
 
-    def execute_trade(self, action: str, quantity: float):
-        logging.info(f"Executing action: {action} for {quantity} {self.symbol}")
-        return self._place_order(action, quantity)
+
+def smart_trade(action, symbol, quantity, leverage=50):
+    # Determine sides
+    if action.lower() == "buy":
+        close_position(symbol, "short")
+        time.sleep(0.5)
+        place_order(symbol, "open_long", quantity, leverage)
+    elif action.lower() == "sell":
+        close_position(symbol, "long")
+        time.sleep(0.5)
+        place_order(symbol, "open_short", quantity, leverage)
+    else:
+        print("Invalid action. Must be 'buy' or 'sell'")
