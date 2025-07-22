@@ -6,7 +6,6 @@ import base64
 import json
 import os
 
-# === Load from environment or hardcoded ===
 API_KEY = os.getenv("BITGET_API_KEY", "your_api_key_here")
 API_SECRET = os.getenv("BITGET_API_SECRET", "your_api_secret_here")
 API_PASSPHRASE = os.getenv("BITGET_API_PASSPHRASE", "your_passphrase_here")
@@ -88,14 +87,18 @@ def close_position(symbol, side):
 
 
 def smart_trade(action, symbol, quantity, leverage=50):
-    # Determine sides
-    if action.lower() == "buy":
+    action_clean = action.lower().strip()
+    print(f"[DEBUG] smart_trade received action={action_clean}")
+
+    if action_clean == "buy":
         close_position(symbol, "short")
         time.sleep(0.5)
         place_order(symbol, "open_long", quantity, leverage)
-    elif action.lower() == "sell":
+    elif action_clean == "sell":
         close_position(symbol, "long")
         time.sleep(0.5)
         place_order(symbol, "open_short", quantity, leverage)
     else:
         print("Invalid action. Must be 'buy' or 'sell'")
+        with open("/root/sol/webhook_logs.log", "a") as f:
+            f.write(f"[ERROR] Invalid action received: {action}\n")
