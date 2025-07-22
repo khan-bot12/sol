@@ -46,11 +46,12 @@ class BitgetTrader:
             print(f"[ERROR] Unsupported symbol: {symbol}")
             return
 
+        full_symbol = symbol.upper() + "_UMCBL"
         path = "/api/mix/v1/order/placeOrder"
         url = BASE_URL + path
 
         body_dict = {
-            "symbol": symbol.upper(),
+            "symbol": full_symbol,
             "marginCoin": "USDT",
             "productType": "UMCBL",
             "size": str(size),
@@ -71,11 +72,12 @@ class BitgetTrader:
             print(f"[ERROR] Unsupported symbol: {symbol}")
             return
 
+        full_symbol = symbol.upper() + "_UMCBL"
         path = "/api/mix/v1/order/placeOrder"
         url = BASE_URL + path
 
         body_dict = {
-            "symbol": symbol.upper(),
+            "symbol": full_symbol,
             "marginCoin": "USDT",
             "productType": "UMCBL",
             "size": str(size),
