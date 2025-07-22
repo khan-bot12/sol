@@ -1,10 +1,10 @@
 import os
 import time
 import hmac
-import json
-import base64
 import hashlib
+import base64
 import requests
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -14,96 +14,91 @@ API_SECRET = os.getenv("BITGET_API_SECRET")
 API_PASSPHRASE = os.getenv("BITGET_API_PASSPHRASE")
 BASE_URL = "https://api.bitget.com"
 
+logging.basicConfig(filename='webhook_logs.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+HEADERS = {
+    "Content-Type": "application/json",
+    "ACCESS-KEY": API_KEY,
+    "ACCESS-PASSPHRASE": API_PASSPHRASE,
+}
+
+
+def _get_timestamp():
+    return str(int(time.time() * 1000))
+
+
+def _sign(method, request_path, body=''):
+    timestamp = _get_timestamp()
+    prehash = timestamp + method.upper() + request_path + body
+    signature = base64.b64encode(
+        hmac.new(API_SECRET.encode(), prehash.encode(), hashlib.sha256).digest()
+    ).decode()
+    return signature, timestamp
+
+
+def _send_request(method, path, body=''):
+    body_str = body if isinstance(body, str) else json.dumps(body)
+    signature, timestamp = _sign(method, path, body_str)
+
+    headers = HEADERS.copy()
+    headers.update({
+        "ACCESS-TIMESTAMP": timestamp,
+        "ACCESS-SIGN": signature
+    })
+
+    url = BASE_URL + path
+    response = requests.request(method, url, headers=headers, data=body_str)
+    if response.status_code != 200:
+        logging.error(f"Error: {response.status_code} - {response.text}")
+    return response.json()
+
+
 class BitgetTrader:
-    def __init__(self):
-        self.supported_symbols = ["SOLUSDT", "ETHUSDT", "BTCUSDT"]
+    def __init__(self, symbol: str):
+        self.symbol = symbol.upper()  # e.g., SOLUSDT
+        self.margin_coin = "USDT"
+        self.leverage = 50
+        self.symbol_full = f"{self.symbol}_UMCBL"
 
-    def _get_timestamp(self):
-        return str(int(time.time() * 1000))
+    def _place_order(self, action: str, quantity: float):
+        """
+        action: 'buy' (open long), 'sell' (open short), 'close_long', 'close_short'
+        """
+        side = "open"
+        trade_side = "buy"
 
-    def _sign(self, timestamp, method, request_path, body=''):
-        prehash = f"{timestamp}{method.upper()}{request_path}{body}"
-        signature = hmac.new(
-            API_SECRET.encode(),
-            prehash.encode(),
-            hashlib.sha256
-        ).digest()
-        return base64.b64encode(signature).decode()
+        if action == "buy":
+            side = "open"
+            trade_side = "buy"
+        elif action == "sell":
+            side = "open"
+            trade_side = "sell"
+        elif action == "close_long":
+            side = "close"
+            trade_side = "sell"
+        elif action == "close_short":
+            side = "close"
+            trade_side = "buy"
+        else:
+            logging.error(f"Invalid action: {action}")
+            return {"error": "Invalid action"}
 
-    def _headers(self, method, path, body=''):
-        timestamp = self._get_timestamp()
-        sign = self._sign(timestamp, method, path, body)
-        return {
-            "ACCESS-KEY": API_KEY,
-            "ACCESS-SIGN": sign,
-            "ACCESS-TIMESTAMP": timestamp,
-            "ACCESS-PASSPHRASE": API_PASSPHRASE,
-            "Content-Type": "application/json"
-        }
-
-    def _place_order(self, symbol, side, size, leverage):
-        if symbol.upper() not in self.supported_symbols:
-            print(f"[ERROR] Unsupported symbol: {symbol}")
-            return
-
-        full_symbol = symbol.upper() + "_UMCBL"
-        path = "/api/mix/v1/order/placeOrder"
-        url = BASE_URL + path
-
-        body_dict = {
-            "symbol": full_symbol,
-            "marginCoin": "USDT",
-            "productType": "UMCBL",
-            "size": str(size),
-            "side": side,
+        order = {
+            "symbol": self.symbol_full,
+            "marginCoin": self.margin_coin,
             "orderType": "market",
-            "tradeSide": "open",
-            "leverage": str(leverage)
-        }
-
-        body = json.dumps(body_dict)
-        headers = self._headers("POST", path, body)
-
-        response = requests.post(url, headers=headers, data=body)
-        print("[INFO] Order Response:", response.text)
-
-    def _close_order(self, symbol, side, size="0.1"):
-        if symbol.upper() not in self.supported_symbols:
-            print(f"[ERROR] Unsupported symbol: {symbol}")
-            return
-
-        full_symbol = symbol.upper() + "_UMCBL"
-        path = "/api/mix/v1/order/placeOrder"
-        url = BASE_URL + path
-
-        body_dict = {
-            "symbol": full_symbol,
-            "marginCoin": "USDT",
-            "productType": "UMCBL",
-            "size": str(size),
             "side": side,
-            "orderType": "market",
-            "tradeSide": "close",
+            "tradeSide": trade_side,
+            "size": str(quantity),
+            "leverage": str(self.leverage)
         }
 
-        body = json.dumps(body_dict)
-        headers = self._headers("POST", path, body)
+        logging.info(f"Placing order: {order}")
+        path = "/api/mix/v1/order/placeOrder"
+        result = _send_request("POST", path, json.dumps(order))
+        logging.info(f"Order result: {result}")
+        return result
 
-        response = requests.post(url, headers=headers, data=body)
-        print("[INFO] Close Order Response:", response.text)
-
-    def open_long(self, symbol, size, leverage):
-        print(f"[ACTION] Opening LONG: {symbol}, Qty: {size}, Lev: {leverage}")
-        self._place_order(symbol, "buy", size, leverage)
-
-    def open_short(self, symbol, size, leverage):
-        print(f"[ACTION] Opening SHORT: {symbol}, Qty: {size}, Lev: {leverage}")
-        self._place_order(symbol, "sell", size, leverage)
-
-    def close_long(self, symbol):
-        print(f"[ACTION] Closing LONG: {symbol}")
-        self._close_order(symbol, "sell")
-
-    def close_short(self, symbol):
-        print(f"[ACTION] Closing SHORT: {symbol}")
-        self._close_order(symbol, "buy")
+    def execute_trade(self, action: str, quantity: float):
+        logging.info(f"Executing action: {action} for {quantity} {self.symbol}")
+        return self._place_order(action, quantity)
