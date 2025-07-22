@@ -3,6 +3,7 @@ import time
 import hmac
 import base64
 import hashlib
+import json
 import requests
 from dotenv import load_dotenv
 
@@ -42,7 +43,13 @@ def send_request(method, endpoint, payload=None):
 
     if response.status_code != 200:
         print(f"[HTTP Error] {response.status_code} - {response.text}")
-    return response.json()
+        return None
+
+    try:
+        return response.json()
+    except Exception as e:
+        print(f"[JSON Error] {e}")
+        return None
 
 def get_position(symbol):
     endpoint = f"/api/mix/v1/position/singlePosition?symbol={symbol}&marginCoin=USDT"
@@ -72,8 +79,11 @@ def place_order(symbol, side, quantity, leverage):
 
 def smart_trade(action, symbol, quantity, leverage):
     pos = get_position(symbol)
+
+    if pos is None or pos.get("code") != "00000":
+        return [f"[Error] Failed to fetch position: {pos}"]
+
     side = pos.get("data", {}).get("holdSide")
-    
     result = []
 
     if action == "buy":
@@ -99,6 +109,6 @@ def smart_trade(action, symbol, quantity, leverage):
             result.append("No short position to close.")
 
     else:
-        result.append(f"Invalid action: {action}")
+        result.append(f"[Error] Invalid action: {action}")
 
     return result
