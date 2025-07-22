@@ -1,104 +1,104 @@
-import requests
+import os
 import time
 import hmac
-import hashlib
 import base64
-import json
-import os
+import hashlib
+import requests
+from dotenv import load_dotenv
 
-API_KEY = os.getenv("BITGET_API_KEY", "your_api_key_here")
-API_SECRET = os.getenv("BITGET_API_SECRET", "your_api_secret_here")
-API_PASSPHRASE = os.getenv("BITGET_API_PASSPHRASE", "your_passphrase_here")
+load_dotenv()
+
+API_KEY = os.getenv("BITGET_API_KEY")
+API_SECRET = os.getenv("BITGET_API_SECRET")
+API_PASSPHRASE = os.getenv("BITGET_API_PASSPHRASE")
 BASE_URL = "https://api.bitget.com"
 
 HEADERS = {
+    "Content-Type": "application/json",
     "ACCESS-KEY": API_KEY,
     "ACCESS-PASSPHRASE": API_PASSPHRASE,
-    "Content-Type": "application/json"
 }
 
+def get_timestamp():
+    return str(int(time.time() * 1000))
 
-def get_server_time():
-    response = requests.get(BASE_URL + "/api/v2/public/time")
-    return str(response.json()['data'])
-
-
-def sign_request(timestamp, method, request_path, body=""):
+def sign_request(timestamp, method, request_path, body=''):
     message = f"{timestamp}{method}{request_path}{body}"
-    mac = hmac.new(bytes(API_SECRET, encoding='utf8'),
-                   bytes(message, encoding='utf8'),
-                   digestmod=hashlib.sha256)
+    mac = hmac.new(API_SECRET.encode(), message.encode(), hashlib.sha256)
     d = mac.digest()
     return base64.b64encode(d).decode()
 
+def send_request(method, endpoint, payload=None):
+    timestamp = get_timestamp()
+    body = '' if payload is None else json.dumps(payload)
+    signature = sign_request(timestamp, method.upper(), endpoint, body)
 
-def place_order(symbol, side, size, leverage):
-    timestamp = get_server_time()
-    path = "/api/v2/mix/order/place"
-    url = BASE_URL + path
+    headers = HEADERS.copy()
+    headers["ACCESS-TIMESTAMP"] = timestamp
+    headers["ACCESS-SIGN"] = signature
 
-    body = {
+    url = BASE_URL + endpoint
+    response = requests.request(method, url, headers=headers, data=body)
+
+    if response.status_code != 200:
+        print(f"[HTTP Error] {response.status_code} - {response.text}")
+    return response.json()
+
+def get_position(symbol):
+    endpoint = f"/api/mix/v1/position/singlePosition?symbol={symbol}&marginCoin=USDT"
+    return send_request("GET", endpoint)
+
+def close_position(symbol, side, quantity):
+    order_side = "close_long" if side == "long" else "close_short"
+    payload = {
         "symbol": symbol,
         "marginCoin": "USDT",
+        "size": str(quantity),
+        "side": order_side,
+        "orderType": "market"
+    }
+    return send_request("POST", "/api/mix/v1/order/close-position", payload)
+
+def place_order(symbol, side, quantity, leverage):
+    payload = {
+        "symbol": symbol,
+        "marginCoin": "USDT",
+        "size": str(quantity),
+        "side": side,
         "orderType": "market",
-        "side": side,
-        "size": str(size),
-        "leverage": str(leverage),
-        "presetTakeProfitPrice": None,
-        "presetStopLossPrice": None,
-        "tradeSide": "open",
-        "productType": "umcbl"
+        "leverage": str(leverage)
     }
+    return send_request("POST", "/api/mix/v1/order/place-order", payload)
 
-    body_json = json.dumps(body)
-    sign = sign_request(timestamp, "POST", path, body_json)
+def smart_trade(action, symbol, quantity, leverage):
+    pos = get_position(symbol)
+    side = pos.get("data", {}).get("holdSide")
+    
+    result = []
 
-    headers = HEADERS.copy()
-    headers["ACCESS-TIMESTAMP"] = timestamp
-    headers["ACCESS-SIGN"] = sign
+    if action == "buy":
+        if side == "short":
+            result.append(close_position(symbol, "short", quantity))
+        result.append(place_order(symbol, "open_long", quantity, leverage))
 
-    response = requests.post(url, headers=headers, data=body_json)
-    print(f"Place order response: {response.text}")
-    return response.json()
+    elif action == "sell":
+        if side == "long":
+            result.append(close_position(symbol, "long", quantity))
+        result.append(place_order(symbol, "open_short", quantity, leverage))
 
+    elif action == "close_long":
+        if side == "long":
+            result.append(close_position(symbol, "long", quantity))
+        else:
+            result.append("No long position to close.")
 
-def close_position(symbol, side):
-    timestamp = get_server_time()
-    path = "/api/v2/mix/order/close-position"
-    url = BASE_URL + path
+    elif action == "close_short":
+        if side == "short":
+            result.append(close_position(symbol, "short", quantity))
+        else:
+            result.append("No short position to close.")
 
-    body = {
-        "symbol": symbol,
-        "marginCoin": "USDT",
-        "side": side,
-        "productType": "umcbl"
-    }
-
-    body_json = json.dumps(body)
-    sign = sign_request(timestamp, "POST", path, body_json)
-
-    headers = HEADERS.copy()
-    headers["ACCESS-TIMESTAMP"] = timestamp
-    headers["ACCESS-SIGN"] = sign
-
-    response = requests.post(url, headers=headers, data=body_json)
-    print(f"Close position response: {response.text}")
-    return response.json()
-
-
-def smart_trade(action, symbol, quantity, leverage=50):
-    action_clean = action.lower().strip()
-    print(f"[DEBUG] smart_trade received action={action_clean}")
-
-    if action_clean == "buy":
-        close_position(symbol, "short")
-        time.sleep(0.5)
-        place_order(symbol, "open_long", quantity, leverage)
-    elif action_clean == "sell":
-        close_position(symbol, "long")
-        time.sleep(0.5)
-        place_order(symbol, "open_short", quantity, leverage)
     else:
-        print("Invalid action. Must be 'buy' or 'sell'")
-        with open("/root/sol/webhook_logs.log", "a") as f:
-            f.write(f"[ERROR] Invalid action received: {action}\n")
+        result.append(f"Invalid action: {action}")
+
+    return result
